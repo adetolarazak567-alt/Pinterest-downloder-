@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pinterest Downloader - Free Image & Video Saver</title>
+<meta name="description" content="Download Pinterest images and videos by link.">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#0f172a;color:#fff}header{padding:24px;text-align:center}.wrap{max-width:760px;margin:auto;padding:20px}.card{background:#111827;border:1px solid #334155;border-radius:18px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.3)}input{width:100%;padding:14px;border-radius:12px;border:1px solid #475569;background:#0b1220;color:#fff;font-size:16px}button{margin-top:12px;width:100%;padding:14px;border:0;border-radius:12px;background:#e60023;color:#fff;font-weight:700;font-size:16px;cursor:pointer}button:hover{opacity:.92}.muted{color:#94a3b8;font-size:14px}.hidden{display:none}#result{margin-top:20px;padding:18px;border-radius:14px;background:#0b1220;border:1px solid #334155}img,video{max-width:100%;border-radius:12px;margin-top:12px}.small{font-size:13px;color:#94a3b8;margin-top:8px}footer{text-align:center;padding:24px;color:#94a3b8}
+</style>
+</head>
+<body>
+<header><h1>Pinterest Downloader</h1><p class="muted">Paste a Pinterest link to download images or videos</p></header>
+<div class="wrap">
+<div class="card">
+<input id="url" type="url" placeholder="https://www.pinterest.com/pin/...">
+<button onclick="downloadPin()">Download</button>
+<p class="small">Backend endpoint placeholder is ready for your Python API.</p>
+<div id="loading" class="hidden">Processing...</div>
+<div id="result" class="hidden"></div>
+</div>
+</div>
+<footer>Made for deployment on Netlify / Vercel</footer>
+<script>
+// CHANGE THIS TO YOUR PYTHON BACKEND URL LATER
+const API_BASE = 'https://your-python-backend-url.com/api/download';async function downloadPin(){ const url = document.getElementById('url').value.trim(); const result = document.getElementById('result'); const loading = document.getElementById('loading'); result.classList.add('hidden'); result.innerHTML=''; if(!url){alert('Paste a Pinterest link first');return;} loading.classList.remove('hidden'); try{ const res = await fetch(API_BASE, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) }); const data = await res.json(); loading.classList.add('hidden'); if(!data.success) throw new Error(data.message || 'Failed'); let html = <h3>${data.title || 'Ready to Download'}</h3>; if(data.type === 'image') html += <img src="${data.media}" alt="Pinterest image">; if(data.type === 'video') html += <video controls src="${data.media}"></video>; html += <p><a href="${data.media}" download style="color:#22c55e;font-weight:bold">Download File</a></p>; result.innerHTML = html; result.classList.remove('hidden'); }catch(err){ loading.classList.add('hidden'); result.innerHTML = '<b>Error:</b> Backend not connected yet or invalid response.'; result.classList.remove('hidden'); } } </script>
+
+</body>
+</html>
