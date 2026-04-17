@@ -1,31 +1,60 @@
-from flask import Flask, request, jsonify from flask_cors import CORS import requests, re from bs4 import BeautifulSoup
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import requests
+import re
+from bs4 import BeautifulSoup
 
-app = Flask(name) CORS(app)
+app = Flask(__name__)
+CORS(app)
 
-HEADERS = { 'User-Agent': 'Mozilla/5.0' }
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
 
-def extract_media(url): r = requests.get(url, headers=HEADERS, timeout=15) r.raise_for_status() html = r.text title = 'Pinterest Download' soup = BeautifulSoup(html, 'html.parser') if soup.title and soup.title.string: title = soup.title.string.strip()
+def extract_media(url):
+    r = requests.get(url, headers=HEADERS, timeout=15)
+    r.raise_for_status()
+    html = r.text
 
-# Try video first
-m = re.search(r'"contentUrl":"(https:[^\"]+\.mp4[^"]*)"', html)
-if m:
-    media = m.group(1).replace('\\u002F','/').replace('\\','')
-    return {'success': True, 'type': 'video', 'title': title, 'media': media}
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.title.string.strip() if soup.title else "Pinterest Download"
 
-# Try image
-m = re.search(r'"image":"(https:[^\"]+)"', html)
-if m:
-    media = m.group(1).replace('\\u002F','/').replace('\\','')
-    return {'success': True, 'type': 'image', 'title': title, 'media': media}
+    video = re.search(r'contentUrl\":\"(https:[^"]+\.mp4[^"]*)', html)
+    if video:
+        return {
+            "success": True,
+            "type": "video",
+            "title": title,
+            "media": video.group(1).replace("\\u002F", "/")
+        }
 
-og = re.search(r'<meta property="og:image" content="([^"]+)"', html)
-if og:
-    return {'success': True, 'type': 'image', 'title': title, 'media': og.group(1)}
+    image = re.search(r'<meta property=\"og:image\" content=\"([^\"]+)\"', html)
+    if image:
+        return {
+            "success": True,
+            "type": "image",
+            "title": title,
+            "media": image.group(1)
+        }
 
-return {'success': False, 'message': 'Media not found'}
+    return {"success": False, "message": "Media not found"}
 
-@app.route('/api/download', methods=['POST']) def download(): data = request.get_json(silent=True) or {} url = data.get('url','').strip() if not url: return jsonify({'success': False, 'message': 'URL required'}), 400 try: return jsonify(extract_media(url)) except Exception as e: return jsonify({'success': False, 'message': str(e)}), 500
+@app.route("/")
+def home():
+    return {"status": "ok"}
 
-@app.route('/') def home(): return {'status':'ok','message':'Pinterest Downloader API running'}
+@app.route("/api/download", methods=["POST"])
+def download():
+    data = request.get_json()
+    url = data.get("url", "")
 
-if name == 'main': app.run(host='0.0.0.0', port=5000, debug=True)
+    if not url:
+        return jsonify({"success": False, "message": "No URL"}), 400
+
+    try:
+        return jsonify(extract_media(url))
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run()
