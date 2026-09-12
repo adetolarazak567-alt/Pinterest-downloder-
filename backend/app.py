@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
-import requests, re, json
+import requests, re, json, secrets, string
 from bs4 import BeautifulSoup
 from urllib.parse import quote
 
@@ -49,6 +49,12 @@ def _thumb_from_image(url, size="236x"):
 def _area(d):
     try: return int(d.get("width") or 0) * int(d.get("height") or 0)
     except Exception: return 0
+
+
+def _random_suffix(length=6):
+    """Short unique suffix: lowercase letters + digits."""
+    alphabet = string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def _find_media(node, found):
@@ -220,8 +226,9 @@ def stream():
     * Forwards the client's `Range` header straight to Pinterest.
     * Returns Pinterest's `206 Partial Content` + `Content-Range` verbatim.
     * Uses no disk and no in-memory cache.
-    * Chrome / IDM / aria2 / wget -c can pause for days and resume — because
-      resume is negotiated between the client and Pinterest, not us.
+    * Every download gets a unique branded filename:
+        toolifyx.netlify_<random6>.<ext>
+      so no "file already exists" prompts and every file carries the site name.
     """
     target = request.args.get("url", "").strip()
     if not target:
@@ -258,7 +265,11 @@ def stream():
     is_video = VIDEO_EXT_RE.search(target) or \
                upstream.headers.get("Content-Type", "").startswith("video/")
     ext = "mp4" if is_video else "jpg"
-    headers["Content-Disposition"] = f'attachment; filename="pinterest_media.{ext}"'
+
+    # --- BRANDED UNIQUE FILENAME: toolifyx.netlify_<random6>.<ext> ---
+    unique_name = f"toolifyx.netlify_{_random_suffix(6)}.{ext}"
+
+    headers["Content-Disposition"] = f'attachment; filename="{unique_name}"'
 
     if request.method == "HEAD":
         upstream.close()
