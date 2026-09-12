@@ -18,28 +18,43 @@ SESSION.headers.update(HEADERS)
 
 DIRECT_MEDIA_RE = re.compile(r"\.(jpe?g|png|gif|webp|mp4)(\?|$)", re.I)
 VIDEO_EXT_RE    = re.compile(r"\.mp4(\?|$)", re.I)
-CHUNK = 64 * 1024          # 64 KB — keeps memory per-request tiny
+CHUNK = 64 * 1024   # 64 KB — keeps memory per-request tiny on free tier
 
 
 # ============================================================
-#  EXTRACTION (same as before)
+#  HELPERS
 # ============================================================
 def _clean(u):
+    """Undo Pinterest's JSON/HTML escaping in URLs."""
     if not u: return u
     return u.replace("\\u002F", "/").replace("\\/", "/").replace("&amp;", "&")
 
+
 def _upgrade_image(url):
+    """Turn any i.pinimg.com thumbnail into the full-size original."""
     url = _clean(url)
     if not url: return url
     return re.sub(r"(https?://i\.pinimg\.com/)(?:\d+x\d*|originals)/",
                   r"\1originals/", url)
 
+
+def _thumb_from_image(url, size="236x"):
+    """Derive a small thumbnail URL from any i.pinimg.com image."""
+    url = _clean(url)
+    if not url: return url
+    return re.sub(r"(https?://i\.pinimg\.com/)(?:\d+x\d*|originals)/",
+                  rf"\g<1>{size}/", url)
+
+
 def _area(d):
     try: return int(d.get("width") or 0) * int(d.get("height") or 0)
     except Exception: return 0
 
+
 def _find_media(node, found):
+    """Recursively walk Pinterest's embedded JSON looking for images/videos."""
     if isinstance(node, dict):
+        # ---- videos ----
         v = node.get("videos")
         if isinstance(v, dict) and isinstance(v.get("video_list"), dict):
             for item in v["video_list"].values():
@@ -47,8 +62,11 @@ def _find_media(node, found):
                 u = _clean(item.get("url") or "")
                 if not u.lower().endswith(".mp4"): continue
                 if _area(item) >= _area(found.get("video", {})):
-                    found["video"] = {"url": u, "width": item.get("width"),
+                    found["video"] = {"url": u,
+                                      "width": item.get("width"),
                                       "height": item.get("height")}
+
+        # ---- images ----
         imgs = node.get("images")
         if isinstance(imgs, dict):
             for key in ("orig", "originals"):
@@ -58,56 +76,106 @@ def _find_media(node, found):
                         found["image"] = {"url": _upgrade_image(img["url"]),
                                           "width": img.get("width"),
                                           "height": img.get("height")}
-        for val in node.values(): _find_media(val, found)
-    elif isinstance(node, list):
-        for i in node: _find_media(i, found)
 
+        for val in node.values():
+            _find_media(val, found)
+
+    elif isinstance(node, list):
+        for item in node:
+            _find_media(item, found)
+
+
+# ============================================================
+#  EXTRACTION
+# ============================================================
 def extract_media(url):
+    # --- Direct media link pasted in (i.pinimg.com/....jpg or ....mp4) ---
     if DIRECT_MEDIA_RE.search(url):
         if VIDEO_EXT_RE.search(url):
-            return {"success": True, "type": "video",
-                    "title": "Pinterest Video", "media": url}
-        return {"success": True, "type": "image",
-                "title": "Pinterest Image", "media": _upgrade_image(url)}
+            return {
+                "success": True,
+                "type": "video",
+                "title": "Pinterest Video",
+                "media": url,
+                "thumbnail": None,
+                "thumbnail_small": None,
+            }
+        full = _upgrade_image(url)
+        return {
+            "success": True,
+            "type": "image",
+            "title": "Pinterest Image",
+            "media": full,
+            "thumbnail": _thumb_from_image(url, "564x"),
+            "thumbnail_small": _thumb_from_image(url, "236x"),
+        }
 
+    # --- Normal Pinterest page ---
     r = SESSION.get(url, timeout=20, allow_redirects=True)
     r.raise_for_status()
     r.encoding = r.apparent_encoding or "utf-8"
     html = r.text
+
     soup = BeautifulSoup(html, "html.parser")
     title = (soup.title.string.strip() if (soup.title and soup.title.string)
              else "Pinterest Download")
+
     found = {}
 
+    # 1) Preferred: parse __PWS_DATA__ JSON (has orig image + mp4 list)
     script = soup.find("script", id="__PWS_DATA__")
     if script and script.string:
-        try: _find_media(json.loads(script.string), found)
-        except Exception: pass
+        try:
+            _find_media(json.loads(script.string), found)
+        except Exception:
+            pass
 
+    # 2) Fallback: regex the raw HTML for an mp4
     if "video" not in found:
         m = re.search(r'"(?:contentUrl|url)"\s*:\s*"(https:[^"]+?\.mp4[^"]*)"', html)
-        if m: found["video"] = {"url": _clean(m.group(1))}
+        if m:
+            found["video"] = {"url": _clean(m.group(1))}
 
+    # 3) Fallback: og:image meta (both attribute orders)
     if "image" not in found:
         m = (re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html)
              or re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image', html))
-        if m: found["image"] = {"url": _upgrade_image(m.group(1))}
+        if m:
+            found["image"] = {"url": _upgrade_image(m.group(1))}
 
+    # 4) Last resort: any pinimg image URL in the page
     if "image" not in found:
         m = re.search(r'https://i\.pinimg\.com/[^"\\\s]+?\.(?:jpe?g|png|webp)', html, re.I)
-        if m: found["image"] = {"url": _upgrade_image(m.group(0))}
+        if m:
+            found["image"] = {"url": _upgrade_image(m.group(0))}
 
+    # --- Build response ---
     if "video" in found:
-        return {"success": True, "type": "video", "title": title,
-                "media": found["video"]["url"],
-                "width": found["video"].get("width"),
-                "height": found["video"].get("height"),
-                "thumbnail": found.get("image", {}).get("url")}
+        thumb = found.get("image", {}).get("url")
+        return {
+            "success": True,
+            "type": "video",
+            "title": title,
+            "media": found["video"]["url"],
+            "width": found["video"].get("width"),
+            "height": found["video"].get("height"),
+            "thumbnail": thumb,
+            "thumbnail_small": _thumb_from_image(thumb, "236x"),
+        }
+
     if "image" in found:
-        return {"success": True, "type": "image", "title": title,
-                "media": found["image"]["url"],
-                "width": found["image"].get("width"),
-                "height": found["image"].get("height")}
+        full = found["image"]["url"]
+        return {
+            "success": True,
+            "type": "image",
+            "title": title,
+            "media": full,
+            "width": found["image"].get("width"),
+            "height": found["image"].get("height"),
+            "thumbnail": _thumb_from_image(full, "564x"),
+            "thumbnail_small": _thumb_from_image(full, "236x"),
+        }
+
     return {"success": False, "message": "Media not found"}
 
 
@@ -125,17 +193,19 @@ def download():
     url = (data.get("url") or "").strip()
     if not url:
         return jsonify({"success": False, "message": "No URL"}), 400
+
     try:
         result = extract_media(url)
         if not result.get("success"):
             return jsonify(result), 404
-        # Optional proxy URL. Only use this if you NEED a custom filename
-        # or need to force CORS. Otherwise just use result["media"] directly
-        # (client downloads from Pinterest — 0 bytes through your server).
+
+        # Optional proxy URL for custom filename / forced CORS.
+        # Prefer using result["media"] directly to save free-tier bandwidth.
         result["stream_url"] = (
             f"/api/stream?url={quote(result['media'], safe='')}"
         )
         return jsonify(result)
+
     except requests.exceptions.RequestException as e:
         return jsonify({"success": False, "message": f"Request failed: {e}"}), 502
     except Exception as e:
@@ -150,7 +220,7 @@ def stream():
     * Forwards the client's `Range` header straight to Pinterest.
     * Returns Pinterest's `206 Partial Content` + `Content-Range` verbatim.
     * Uses no disk and no in-memory cache.
-    * Chrome/IDM/aria2/wget -c can pause for days and resume — because
+    * Chrome / IDM / aria2 / wget -c can pause for days and resume — because
       resume is negotiated between the client and Pinterest, not us.
     """
     target = request.args.get("url", "").strip()
@@ -164,7 +234,7 @@ def stream():
             return jsonify({"success": False, "message": r.get("message")}), 400
         target = r["media"]
 
-    # Forward Range (the whole point of this endpoint).
+    # Forward Range — the whole point of this endpoint.
     fwd = {"Accept-Encoding": "identity"}
     if request.headers.get("Range"):
         fwd["Range"] = request.headers["Range"]
